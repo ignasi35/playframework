@@ -5,7 +5,8 @@
 package play.api.data
 
 import org.specs2.mutable.Specification
-import play.api.libs.json.{JsNull, Json}
+import play.api.libs.json.JsNull
+import play.api.libs.json.Json
 
 class FormUtilsSpec extends Specification {
 
@@ -35,13 +36,13 @@ class FormUtilsSpec extends Specification {
         "arr[0].a" -> "an-a",
         "arr[0].b" -> "true",
         "arr[0].d" -> "10",
-        "arr[1]" -> "str",
-        "arr[2]" -> "20",
-        "arr[3]" -> "blah",
-        "e.f" -> "an-f",
-        "e.g" -> "false",
-        "h" -> "an-h",
-        "i" -> "30"
+        "arr[1]"   -> "str",
+        "arr[2]"   -> "20",
+        "arr[3]"   -> "blah",
+        "e.f"      -> "an-f",
+        "e.g"      -> "false",
+        "h"        -> "an-h",
+        "i"        -> "30"
       )
 
       val map = FormUtils.fromJson(json, 1000)
@@ -58,13 +59,50 @@ class FormUtilsSpec extends Specification {
       ok
     }
 
+    "parse normally when the input is small enough" in {
+      val keyLength = 10
+      val itemCount = 10
+      val maxChars  = 500 * 1000 // a limit we're not reaching
+      try {
+        FormUtils.fromJson(
+          Json.obj("a" * keyLength -> Json.arr(0 to itemCount)),
+          maxChars
+        )
+      } catch {
+        case _: OutOfMemoryError =>
+          ko("OutOfMemoryError")
+      }
+      ok
+    }
+
+    "abort parsing when maximum memory is used" in {
+      // Even when the JSON is small, if the memory limit is exceed the parsing must stop.
+      val keyLength = 10
+      val itemCount = 10
+      val maxChars  = 3 // yeah, maxChars is only 3 chars. We want to hit the limit.
+      (try {
+        FormUtils.fromJson(
+          Json.obj("a" * keyLength -> Json.arr(0 to itemCount)),
+          maxChars
+        )
+      } catch {
+        case _: OutOfMemoryError =>
+          ko("OutOfMemoryError")
+      }) must throwA[FormJsonExpansionTooLarge]
+    }
+
     "not run out of heap when converting arrays with very long keys" in {
+      // a similar scenario to the previous one but this would cause OOME if it weren't for the limit
+      val keyLength = 10000
+      val itemCount = 100000
+      val maxChars  = keyLength // some value we're likely to exceed. We want this limit to kick in.
       (try {
         FormUtils.fromJson(
           // A JSON object with a key of length 10000, pointing to a list with 100000 elements.
           // In memory, this will consume at most a few MB of space. When expanded, will consume
           // many GB of space.
-          Json.obj("a" * 10000 -> Json.arr(1000000 to 1100000)), 1000000
+          Json.obj("a" * keyLength -> Json.arr(0 to itemCount)),
+          maxChars
         )
       } catch {
         case _: OutOfMemoryError =>
@@ -73,6 +111,7 @@ class FormUtilsSpec extends Specification {
           ko("OutOfMemoryError")
       }) must throwA[FormJsonExpansionTooLarge]
     }
+
   }
 
 }

@@ -4,8 +4,11 @@
 
 package play.api.data
 
-import scala.language.existentials
+import akka.annotation.InternalApi
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 
+import scala.language.existentials
 import play.api.data.format._
 import play.api.data.validation._
 import play.api.http.HttpVerbs
@@ -39,6 +42,8 @@ import play.api.templates.PlayMagic.translate
  * @param value a concrete value of type `T` if the form submission was successful
  */
 case class Form[T](mapping: Mapping[T], data: Map[String, String], errors: Seq[FormError], value: Option[T]) {
+
+  private val logger: Logger = LoggerFactory.getLogger(classOf[Form[T]])
 
   /**
    * Constraints associated with this form, indexed by field name.
@@ -75,17 +80,25 @@ case class Form[T](mapping: Mapping[T], data: Map[String, String], errors: Seq[F
    * @param data Json data to submit
    * @return a copy of this form, filled with the new data
    */
-  @deprecated("Use bind(JsValue, Int) instead to specify the maximum chars that should be consumed by the flattened form representation of the JSON", "2.8.3")
-  def bind(data: JsValue): Form[T] = bind(FormUtils.fromJson(data, 100000))
+  @deprecated(
+    "Use bind(JsValue, Int) instead to specify the maximum chars that should be consumed by the flattened form representation of the JSON",
+    "2.8.3"
+  )
+  def bind(data: JsValue): Form[T] = {
+    logger.warn(
+      s"Binding json field from form with a hardcoded max size of ${Form.FromJsonMaxChars} bytes. This is deprecated. Use bind(JsValue, Int) instead."
+    )
+    bind(FormUtils.fromJson(data, Form.FromJsonMaxChars))
+  }
 
   /**
-    * Binds data to this form, i.e. handles form submission.
-    *
-    * @param data Json data to submit
-    * @param maxChars The maximum number of chars allowed to be used in the intermediate map representation
-    *                 of the JSON. `parse.DefaultMaxTextLength` is recommended to passed for this parameter.
-    * @return a copy of this form, filled with the new data
-    */
+   * Binds data to this form, i.e. handles form submission.
+   *
+   * @param data Json data to submit
+   * @param maxChars The maximum number of chars allowed to be used in the intermediate map representation
+   *                 of the JSON. `parse.DefaultMaxTextLength` is recommended to passed for this parameter.
+   * @return a copy of this form, filled with the new data
+   */
   def bind(data: JsValue, maxChars: Int): Form[T] = bind(FormUtils.fromJson(data, maxChars))
 
   /**
@@ -100,14 +113,14 @@ case class Form[T](mapping: Mapping[T], data: Map[String, String], errors: Seq[F
         body.asFormUrlEncoded.orElse(body.asMultipartFormData).orElse(body.asJson).getOrElse(body)
       case body => body
     }
-    val data = unwrap match {
+    val data: Map[String, Seq[String]] = unwrap match {
       case body: Map[_, _]                   => body.asInstanceOf[Map[String, Seq[String]]]
       case body: MultipartFormData[_]        => body.asFormUrlEncoded
       case Right(body: MultipartFormData[_]) => body.asFormUrlEncoded
-      case body: play.api.libs.json.JsValue  => FormUtils.fromJson(body, 1000000).mapValues(Seq(_))
+      case body: play.api.libs.json.JsValue  => FormUtils.fromJson(body, Form.FromJsonMaxChars).mapValues(Seq(_)).toMap
       case _                                 => Map.empty
     }
-    val method = request.method.toUpperCase match {
+    val method: Map[_ <: String, Seq[String]] = request.method.toUpperCase match {
       case HttpVerbs.POST | HttpVerbs.PUT | HttpVerbs.PATCH => Map.empty
       case _                                                => request.queryString
     }
@@ -355,6 +368,15 @@ case class Field(
 object Form {
 
   /**
+   * INTERNAL API
+   *
+   * Default maximum number of chars allowed to be used in the intermediate map representation of the
+   * JSON. Defaults to 100k which is the default of parser.maxMemoryBuffer
+   */
+  @InternalApi
+  val FromJsonMaxChars = 102400
+
+  /**
    * Creates a new form from a mapping.
    *
    * For example:
@@ -405,8 +427,13 @@ private[data] object FormUtils {
   def fromJson(js: JsValue, maxChars: Int): Map[String, String] = doFromJson(FromJsonRoot(js), Map.empty, 0, maxChars)
 
   @annotation.tailrec
-  private def doFromJson(context: FromJsonContext, form: Map[String, String], cumulativeChars: Int, maxChars: Int): Map[String, String] = context match {
-    case FromJsonTerm => form
+  private def doFromJson(
+      context: FromJsonContext,
+      form: Map[String, String],
+      cumulativeChars: Int,
+      maxChars: Int
+  ): Map[String, String] = context match {
+    case FromJsonTerm              => form
     case ctx: FromJsonContextValue =>
       // Ensure this contexts next is initialised, this prevents unbounded recursion.
       ctx.next
@@ -419,11 +446,11 @@ private[data] object FormUtils {
           doFromJson(ctx.next, form, cumulativeChars, maxChars)
         case simple =>
           val value = simple match {
-            case JsString(v) => v
-            case JsNumber(v) => v.toString
+            case JsString(v)  => v
+            case JsNumber(v)  => v.toString
             case JsBoolean(v) => v.toString
           }
-          val prefix = ctx.prefix
+          val prefix             = ctx.prefix
           val newCumulativeChars = cumulativeChars + prefix.length + value.length
           if (newCumulativeChars > maxChars) {
             throw FormJsonExpansionTooLarge(maxChars)
@@ -440,10 +467,11 @@ private[data] object FormUtils {
   }
   private case object FromJsonTerm extends FromJsonContext
   private case class FromJsonRoot(value: JsValue) extends FromJsonContextValue {
-    override def prefix = ""
+    override def prefix                = ""
     override def next: FromJsonContext = FromJsonTerm
   }
-  private case class FromJsonArray(parent: FromJsonContextValue, values: scala.collection.IndexedSeq[JsValue], idx: Int) extends FromJsonContextValue {
+  private case class FromJsonArray(parent: FromJsonContextValue, values: scala.collection.IndexedSeq[JsValue], idx: Int)
+      extends FromJsonContextValue {
     override def value: JsValue = values(idx)
     override val prefix: String = s"${parent.prefix}[$idx]"
     override lazy val next: FromJsonContext = if (idx + 1 < values.length) {
@@ -452,7 +480,8 @@ private[data] object FormUtils {
       parent.next
     }
   }
-  private case class FromJsonObject(parent: FromJsonContextValue, fields: IndexedSeq[(String, JsValue)], idx: Int) extends FromJsonContextValue {
+  private case class FromJsonObject(parent: FromJsonContextValue, fields: IndexedSeq[(String, JsValue)], idx: Int)
+      extends FromJsonContextValue {
     override def value: JsValue = fields(idx)._2
     override val prefix: String = if (parent.prefix.isEmpty) {
       fields(idx)._1
@@ -1036,4 +1065,5 @@ trait ObjectMapping {
   }
 }
 
-case class FormJsonExpansionTooLarge(limit: Int) extends RuntimeException(s"Binding form from JSON exceeds form expansion limit of $limit")
+case class FormJsonExpansionTooLarge(limit: Int)
+    extends RuntimeException(s"Binding form from JSON exceeds form expansion limit of $limit")
