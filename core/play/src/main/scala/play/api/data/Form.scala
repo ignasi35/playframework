@@ -5,7 +5,12 @@
 package play.api.data
 
 import scala.language.existentials
-import format._
+import akka.annotation.InternalApi
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
+
+import scala.language.existentials
+import play.api.data.format._
 import play.api.data.validation._
 import play.api.http.HttpVerbs
 import play.api.libs.json.JsValue
@@ -36,6 +41,8 @@ import play.api.templates.PlayMagic.translate
  * @param value a concrete value of type `T` if the form submission was successful
  */
 case class Form[T](mapping: Mapping[T], data: Map[String, String], errors: Seq[FormError], value: Option[T]) {
+  private val logger: Logger = LoggerFactory.getLogger(classOf[Form[T]])
+
   /**
    * Constraints associated with this form, indexed by field name.
    */
@@ -81,7 +88,12 @@ case class Form[T](mapping: Mapping[T], data: Map[String, String], errors: Seq[F
     "Use bind(JsValue, Int) instead to specify the maximum chars that should be consumed by the flattened form representation of the JSON",
     "2.8.3"
   )
-  def bind(data: JsValue): Form[T] = bind(FormUtils.fromJson(data, FromJsonMaxChars))
+  def bind(data: JsValue): Form[T] = {
+    logger.warn(
+      s"Binding json field from form with a hardcoded max size of ${Form.FromJsonMaxChars} bytes. This is deprecated. Use bind(JsValue, Int) instead."
+    )
+    bind(FormUtils.fromJson(data, Form.FromJsonMaxChars))
+  }
 
   /**
    * Binds data to this form, i.e. handles form submission.
@@ -92,8 +104,6 @@ case class Form[T](mapping: Mapping[T], data: Map[String, String], errors: Seq[F
    * @return a copy of this form, filled with the new data
    */
   def bind(data: JsValue, maxChars: Int): Form[T] = bind(FormUtils.fromJson(data, maxChars))
-
-  val FromJsonMaxChars = 1000000
 
   /**
    * Binds request data to this form, i.e. handles form submission.
@@ -107,7 +117,7 @@ case class Form[T](mapping: Mapping[T], data: Map[String, String], errors: Seq[F
         case body: play.api.mvc.AnyContent if body.asMultipartFormData.isDefined =>
           body.asMultipartFormData.get.asFormUrlEncoded
         case body: play.api.mvc.AnyContent if body.asJson.isDefined =>
-          FormUtils.fromJson(body.asJson.get, FromJsonMaxChars).mapValues(Seq(_))
+          FormUtils.fromJson(body.asJson.get, Form.FromJsonMaxChars).mapValues(Seq(_))
         case body: Map[_, _]                         => body.asInstanceOf[Map[String, Seq[String]]]
         case body: play.api.mvc.MultipartFormData[_] => body.asFormUrlEncoded
         case body: Either[_, play.api.mvc.MultipartFormData[_]] =>
@@ -115,7 +125,7 @@ case class Form[T](mapping: Mapping[T], data: Map[String, String], errors: Seq[F
             case Right(b) => b.asFormUrlEncoded
             case Left(_)  => Map.empty[String, Seq[String]]
           }
-        case body: play.api.libs.json.JsValue => FormUtils.fromJson(body, FromJsonMaxChars).mapValues(Seq(_))
+        case body: play.api.libs.json.JsValue => FormUtils.fromJson(body, Form.FromJsonMaxChars).mapValues(Seq(_))
         case _                                => Map.empty[String, Seq[String]]
       }) ++ {
         request.method.toUpperCase match {
@@ -369,6 +379,15 @@ case class Field(
  * Provides a set of operations for creating `Form` values.
  */
 object Form {
+  /**
+   * INTERNAL API
+   *
+   * Default maximum number of chars allowed to be used in the intermediate map representation of the
+   * JSON. Defaults to 100k which is the default of parser.maxMemoryBuffer
+   */
+  @InternalApi
+  val FromJsonMaxChars = 102400
+
   /**
    * Creates a new form from a mapping.
    *

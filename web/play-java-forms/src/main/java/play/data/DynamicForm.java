@@ -300,12 +300,20 @@ public class DynamicForm extends Form<DynamicForm.Dynamic> {
 
   @Override
   public DynamicForm bind(Lang lang, TypedMap attrs, JsonNode data, String... allowedFields) {
+    logger.warn(
+        "Binding json field from form with a hardcoded max size of 100000 bytes. This is deprecated. Use bind(Lang, TypedMap, JsonNode, Int, String...) instead.");
+    return bind(lang, attrs, data, 100000, allowedFields);
+  }
+
+  @Override
+  public DynamicForm bind(
+      Lang lang, TypedMap attrs, JsonNode data, int maxChars, String... allowedFields) {
     return bind(
         lang,
         attrs,
         play.libs.Scala.asJava(
             play.api.data.FormUtils.fromJson(
-                "", play.api.libs.json.Json.parse(play.libs.Json.stringify(data)))),
+                play.api.libs.json.Json.parse(play.libs.Json.stringify(data)), maxChars)),
         allowedFields);
   }
 
